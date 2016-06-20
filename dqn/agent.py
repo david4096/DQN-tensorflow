@@ -175,58 +175,15 @@ class Agent(BaseModel):
     self.update_count += 1
 
   def build_dqn(self):
+    # target network
+    with tf.variable_scope('prediction'):
+      self.pred_network = DQN(config, self.sess)
 
     # target network
     with tf.variable_scope('target'):
-      if self.cnn_format == 'NHWC':
-        self.target_s_t = tf.placeholder('float32', 
-            [None, self.screen_width, self.screen_height, self.history_length], name='target_s_t')
-      else:
-        self.target_s_t = tf.placeholder('float32', 
-            [None, self.history_length, self.screen_width, self.screen_height], name='target_s_t')
+      self.target_network = DQN(config, self.sess)
 
-      self.target_l1, self.t_w['l1_w'], self.t_w['l1_b'] = conv2d(self.target_s_t, 
-          32, [8, 8], [4, 4], initializer, activation_fn, self.cnn_format, name='target_l1')
-      self.target_l2, self.t_w['l2_w'], self.t_w['l2_b'] = conv2d(self.target_l1,
-          64, [4, 4], [2, 2], initializer, activation_fn, self.cnn_format, name='target_l2')
-      self.target_l3, self.t_w['l3_w'], self.t_w['l3_b'] = conv2d(self.target_l2,
-          64, [3, 3], [1, 1], initializer, activation_fn, self.cnn_format, name='target_l3')
-
-      shape = self.target_l3.get_shape().as_list()
-      self.target_l3_flat = tf.reshape(self.target_l3, [-1, reduce(lambda x, y: x * y, shape[1:])])
-
-      if self.dueling:
-        self.t_value_hid, self.t_w['l4_val_w'], self.t_w['l4_val_b'] = \
-            linear(self.target_l3_flat, 512, activation_fn=activation_fn, name='target_value_hid')
-
-        self.t_adv_hid, self.t_w['l4_adv_w'], self.t_w['l4_adv_b'] = \
-            linear(self.target_l3_flat, 512, activation_fn=activation_fn, name='target_adv_hid')
-
-        self.t_value, self.t_w['val_w_out'], self.t_w['val_w_b'] = \
-          linear(self.t_value_hid, 1, name='target_value_out')
-
-        self.t_advantage, self.t_w['adv_w_out'], self.t_w['adv_w_b'] = \
-          linear(self.t_adv_hid, self.env.action_size, name='target_adv_out')
-
-        # Average Dueling
-        self.target_q = self.t_value + (self.t_advantage - 
-          tf.reduce_mean(self.t_advantage, reduction_indices=1, keep_dims=True))
-      else:
-        self.target_l4, self.t_w['l4_w'], self.t_w['l4_b'] = \
-            linear(self.target_l3_flat, 512, activation_fn=activation_fn, name='target_l4')
-        self.target_q, self.t_w['q_w'], self.t_w['q_b'] = \
-            linear(self.target_l4, self.env.action_size, name='target_q')
-
-      self.target_q_idx = tf.placeholder('int32', [None, None], 'outputs_idx')
-      self.target_q_with_idx = tf.gather_nd(self.target_q, self.target_q_idx)
-
-    with tf.variable_scope('pred_to_target'):
-      self.t_w_input = {}
-      self.t_w_assign_op = {}
-
-      for name in self.w.keys():
-        self.t_w_input[name] = tf.placeholder('float32', self.t_w[name].get_shape().as_list(), name=name)
-        self.t_w_assign_op[name] = self.t_w[name].assign(self.t_w_input[name])
+    self.target_network.create_copy_op(self.pred_network)
 
     # optimizer
     with tf.variable_scope('optimizer'):
