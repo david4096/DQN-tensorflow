@@ -43,17 +43,41 @@ def main(_):
       per_process_gpu_memory_fraction=calc_gpu_fraction(FLAGS.gpu_fraction))
 
   with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
+    global_network = DQN(config, sess)
+
     config = get_config(FLAGS) or FLAGS
-
-    if config.env_type == 'simple':
-      env = SimpleGymEnvironment(config)
-    else:
-      env = GymEnvironment(config)
-
     if FLAGS.cpu:
       config.cnn_format = 'NHWC'
 
-    agent = Agent(config, env, sess)
+    agents = {}
+    for worker_id in xrange(config.n_worker):
+      with tf.variable_scope('thread%d' % worker_id) as scope:
+        if config.env_type == 'simple':
+          env = SimpleGymEnvironment(config)
+        else:
+          env = GymEnvironment(config)
+        agents[worker_id] = Agent(config, env, global_network, sess)
+
+    self.global_step = tf.Variable(0, trainable=False)
+
+    self.loss = tf.reduce_mean(tf.square(self.clipped_delta), name='loss')
+    self.learning_rate_step = tf.placeholder('int64', None, name='learning_rate_step')
+    self.learning_rate_op = tf.maximum(self.learning_rate_minimum,
+        tf.train.exponential_decay(
+            self.learning_rate,
+            self.learning_rate_step,
+            self.learning_rate_decay_step,
+            self.learning_rate_decay,
+            staircase=True))
+    self.optim = tf.train.RMSPropOptimizer(
+        self.learning_rate_op, momentum=0.95, epsilon=0.01).minimize(self.loss)
+
+    tf.initialize_all_variables().run()
+
+    self._saver = tf.train.Saver(self.w.values() + [self.step_op], max_to_keep=30)
+
+    self.load_model()
+    self.update_target_q_network()
 
     if FLAGS.save_weight:
       agent.save_weight_to_pkl()

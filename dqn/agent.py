@@ -22,11 +22,8 @@ class Agent(BaseModel):
 
     if not config.async:
       self.memory = ReplayMemory(self.config, self.model_dir)
-
-    with tf.variable_scope('step'):
-      self.step_op = tf.Variable(0, trainable=False, name='step')
-      self.step_input = tf.placeholder('int32', None, name='step_input')
-      self.step_assign_op = self.step_op.assign(self.step_input)
+    else:
+      self.memory = None
 
     self.build_dqn()
 
@@ -134,45 +131,48 @@ class Agent(BaseModel):
 
     if self.step > self.learn_start:
       if self.step % self.train_frequency == 0:
-        self.q_learning_mini_batch()
+        self.update()
 
       if self.step % self.target_q_update_step == self.target_q_update_step - 1:
         self.update_target_q_network()
 
-  def q_learning_mini_batch(self):
-    if self.memory.count < self.history_length:
-      return
+  def update(self):
+    if self.memory == None:
     else:
-      s_t, action, reward, s_t_plus_1, terminal = self.memory.sample()
+      if self.memory.count < self.history_length:
+        return
+      else:
+        s_t, action, reward, s_t_plus_1, terminal = self.memory.sample()
 
-    t = time.time()
-    if self.double_q:
-      # Double Q-learning
-      pred_action = self.q_action.eval({self.s_t: s_t_plus_1})
+      t = time.time()
+      if self.double_q:
+        # Double Q-learning
+        pred_action = self.q_action.eval({self.s_t: s_t_plus_1})
 
-      q_t_plus_1_with_pred_action = self.target_q_with_idx.eval({
-        self.target_s_t: s_t_plus_1,
-        self.target_q_idx: [[idx, pred_a] for idx, pred_a in enumerate(pred_action)]
+        q_t_plus_1_with_pred_action = self.target_q_with_idx.eval({
+          self.target_s_t: s_t_plus_1,
+          self.target_q_idx: [[idx, pred_a] for idx, pred_a in enumerate(pred_action)]
+        })
+        target_q_t = (1. - terminal) * self.discount * q_t_plus_1_with_pred_action + reward
+      else:
+        q_t_plus_1 = self.target_q.eval({self.target_s_t: s_t_plus_1})
+
+        terminal = np.array(terminal) + 0.
+        max_q_t_plus_1 = np.max(q_t_plus_1, axis=1)
+        target_q_t = (1. - terminal) * self.discount * max_q_t_plus_1 + reward
+
+      _, q_t, loss = self.sess.run([self.optim, self.q, self.loss], {
+        self.target_q_t: target_q_t,
+        self.action: action,
+        self.s_t: s_t,
+        self.learning_rate_step: self.step,
       })
-      target_q_t = (1. - terminal) * self.discount * q_t_plus_1_with_pred_action + reward
-    else:
-      q_t_plus_1 = self.target_q.eval({self.target_s_t: s_t_plus_1})
 
-      terminal = np.array(terminal) + 0.
-      max_q_t_plus_1 = np.max(q_t_plus_1, axis=1)
-      target_q_t = (1. - terminal) * self.discount * max_q_t_plus_1 + reward
-
-    _, q_t, loss, summary_str = self.sess.run([self.optim, self.q, self.loss, self.q_summary], {
-      self.target_q_t: target_q_t,
-      self.action: action,
-      self.s_t: s_t,
-      self.learning_rate_step: self.step,
-    })
-
-    self.writer.add_summary(summary_str, self.step)
-    self.total_loss += loss
-    self.total_q += q_t.mean()
-    self.update_count += 1
+    if self.worker_id == 0:
+      self.writer.add_summary(summary_str, self.step)
+      self.total_loss += loss
+      self.total_q += q_t.mean()
+      self.update_count += 1
 
   def build_dqn(self):
     # target network
@@ -196,70 +196,25 @@ class Agent(BaseModel):
       self.delta = self.target_q_t - q_acted
       self.clipped_delta = tf.clip_by_value(self.delta, self.min_delta, self.max_delta, name='clipped_delta')
 
-      self.global_step = tf.Variable(0, trainable=False)
+    if self.worker_id == 0:
+      with tf.variable_scope('summary'):
+        scalar_summary_tags = ['average.reward', 'average.loss', 'average.q', \
+            'episode.max reward', 'episode.min reward', 'episode.avg reward', 'episode.num of game', 'training.learning_rate']
 
-      self.loss = tf.reduce_mean(tf.square(self.clipped_delta), name='loss')
-      self.learning_rate_step = tf.placeholder('int64', None, name='learning_rate_step')
-      self.learning_rate_op = tf.maximum(self.learning_rate_minimum,
-          tf.train.exponential_decay(
-              self.learning_rate,
-              self.learning_rate_step,
-              self.learning_rate_decay_step,
-              self.learning_rate_decay,
-              staircase=True))
-      self.optim = tf.train.RMSPropOptimizer(
-          self.learning_rate_op, momentum=0.95, epsilon=0.01).minimize(self.loss)
+        self.summary_placeholders = {}
+        self.summary_ops = {}
 
-    with tf.variable_scope('summary'):
-      scalar_summary_tags = ['average.reward', 'average.loss', 'average.q', \
-          'episode.max reward', 'episode.min reward', 'episode.avg reward', 'episode.num of game', 'training.learning_rate']
+        for tag in scalar_summary_tags:
+          self.summary_placeholders[tag] = tf.placeholder('float32', None, name=tag.replace(' ', '_'))
+          self.summary_ops[tag]  = tf.scalar_summary("%s-%s/%s" % (self.env_name, self.env_type, tag), self.summary_placeholders[tag])
 
-      self.summary_placeholders = {}
-      self.summary_ops = {}
+        histogram_summary_tags = ['episode.rewards', 'episode.actions']
 
-      for tag in scalar_summary_tags:
-        self.summary_placeholders[tag] = tf.placeholder('float32', None, name=tag.replace(' ', '_'))
-        self.summary_ops[tag]  = tf.scalar_summary("%s-%s/%s" % (self.env_name, self.env_type, tag), self.summary_placeholders[tag])
+        for tag in histogram_summary_tags:
+          self.summary_placeholders[tag] = tf.placeholder('float32', None, name=tag.replace(' ', '_'))
+          self.summary_ops[tag]  = tf.histogram_summary(tag, self.summary_placeholders[tag])
 
-      histogram_summary_tags = ['episode.rewards', 'episode.actions']
-
-      for tag in histogram_summary_tags:
-        self.summary_placeholders[tag] = tf.placeholder('float32', None, name=tag.replace(' ', '_'))
-        self.summary_ops[tag]  = tf.histogram_summary(tag, self.summary_placeholders[tag])
-
-      self.writer = tf.train.SummaryWriter('./logs/%s' % self.model_dir, self.sess.graph)
-
-    tf.initialize_all_variables().run()
-
-    self._saver = tf.train.Saver(self.w.values() + [self.step_op], max_to_keep=30)
-
-    self.load_model()
-    self.update_target_q_network()
-
-  def update_target_q_network(self):
-    for name in self.w.keys():
-      self.t_w_assign_op[name].eval({self.t_w_input[name]: self.w[name].eval()})
-
-  def save_weight_to_pkl(self):
-    if not os.path.exists(self.weight_dir):
-      os.makedirs(self.weight_dir)
-
-    for name in self.w.keys():
-      save_pkl(self.w[name].eval(), os.path.join(self.weight_dir, "%s.pkl" % name))
-
-  def load_weight_from_pkl(self, cpu_mode=False):
-    with tf.variable_scope('load_pred_from_pkl'):
-      self.w_input = {}
-      self.w_assign_op = {}
-
-      for name in self.w.keys():
-        self.w_input[name] = tf.placeholder('float32', self.w[name].get_shape().as_list(), name=name)
-        self.w_assign_op[name] = self.w[name].assign(self.w_input[name])
-
-    for name in self.w.keys():
-      self.w_assign_op[name].eval({self.w_input[name]: load_pkl(os.path.join(self.weight_dir, "%s.pkl" % name))})
-
-    self.update_target_q_network()
+        self.writer = tf.train.SummaryWriter('./logs/%s' % self.model_dir, self.sess.graph)
 
   def inject_summary(self, tag_dict, step):
     summary_str_lists = self.sess.run([self.summary_ops[tag] for tag in tag_dict.keys()], {
