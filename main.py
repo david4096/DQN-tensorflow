@@ -1,5 +1,6 @@
 import random
 import tensorflow as tf
+from threading import Thread
 
 from dqn.agent import Agent
 from dqn.environment import GymEnvironment, SimpleGymEnvironment
@@ -17,6 +18,9 @@ flags.DEFINE_boolean('double_q', False, 'Whether to use double q-learning')
 flags.DEFINE_boolean('dueling', False, 'Whether to use dueling deep q-network')
 flags.DEFINE_boolean('cpu', False, 'Use cpu mode')
 flags.DEFINE_integer('random_seed', 123, 'Value of random seed')
+flags.DEFINE_boolean('async', True, 'Use asynchronous update')
+flags.DEFINE_integer('n_worker', 4, 'The number of workers to run asynchronously')
+
 FLAGS = flags.FLAGS
 
 # Set random seed
