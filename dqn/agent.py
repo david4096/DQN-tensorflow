@@ -11,14 +11,16 @@ from .ops import linear, conv2d
 from .replay_memory import ReplayMemory
 from utils import get_time, save_pkl, load_pkl
 
-class Agent(BaseModel):
-  def __init__(self, config, environment, sess):
-    super(Agent, self).__init__(config)
+class Agent(object):
+  def __init__(self, config, environment, global_network, global_optim, learning_rate_op, sess):
     self.sess = sess
     self.weight_dir = 'weights'
 
     self.env = environment
     self.history = History(self.config)
+
+    self.learning_rate = config.learning_rate
+    self.learning_rate_op = learning_rate_op
 
     if not config.async:
       self.memory = ReplayMemory(self.config, self.model_dir)
@@ -27,9 +29,31 @@ class Agent(BaseModel):
 
     self.build_dqn()
 
-  def train(self):
-    start_step = self.step_op.eval()
-    start_time = time.time()
+  def train(self, global_t):
+    self.global_t = global_t
+
+    # 0. Prepare training
+    state, reward, terminal = self.env.new_random_game()
+    self.observe(state, reward, terminal)
+
+    while True:
+      if global_t[0] > self.t_train_max:
+        break
+
+      # 1. Predict
+      action = self.predict(state)
+      # 2. Step
+      state, reward, terminal = self.env.step(-1, is_training=True)
+      # 3. Observe
+      self.observe(state, reward, terminal)
+
+      if terminal:
+        self.env.new_random_game()
+
+      global_t[0] += 1
+
+  def train_with_log(self, global_t):
+    self.global_t = global_t
 
     num_game, self.update_count, ep_reward = 0, 0, 0.
     total_reward, self.total_loss, self.total_q = 0., 0., 0.
@@ -42,6 +66,9 @@ class Agent(BaseModel):
       self.history.add(screen)
 
     for self.step in tqdm(range(start_step, self.max_step), ncols=70, initial=start_step):
+      if global_t[0] > self.t_train_max:
+        break
+
       if self.step == self.learn_start:
         num_game, self.update_count, ep_reward = 0, 0, 0.
         total_reward, self.total_loss, self.total_q = 0., 0., 0.
@@ -169,7 +196,6 @@ class Agent(BaseModel):
       })
 
     if self.worker_id == 0:
-      self.writer.add_summary(summary_str, self.step)
       self.total_loss += loss
       self.total_q += q_t.mean()
       self.update_count += 1
