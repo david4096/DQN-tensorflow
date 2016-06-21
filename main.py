@@ -49,6 +49,21 @@ def main(_):
     if FLAGS.cpu:
       config.cnn_format = 'NHWC'
 
+    loss = tf.reduce_mean(tf.square(clipped_delta), name='loss')
+    learning_rate_step = tf.placeholder('int64', None, name='learning_rate_step')
+    learning_rate_op = tf.maximum(learning_rate_minimum,
+        tf.train.exponential_decay(
+            learning_rate,
+            learning_rate_step,
+            learning_rate_decay_step,
+            learning_rate_decay,
+            staircase=True))
+
+    global_step = tf.Variable(0, trainable=False)
+
+    global_optim = tf.train.RMSPropOptimizer(
+        learning_rate_op, momentum=0.95, epsilon=0.01).minimize(loss)
+
     agents = {}
     for worker_id in xrange(config.n_worker):
       with tf.variable_scope('thread%d' % worker_id) as scope:
@@ -56,21 +71,8 @@ def main(_):
           env = SimpleGymEnvironment(config)
         else:
           env = GymEnvironment(config)
+        import ipdb; ipdb.set_trace() 
         agents[worker_id] = Agent(config, env, global_network, sess)
-
-    self.global_step = tf.Variable(0, trainable=False)
-
-    self.loss = tf.reduce_mean(tf.square(self.clipped_delta), name='loss')
-    self.learning_rate_step = tf.placeholder('int64', None, name='learning_rate_step')
-    self.learning_rate_op = tf.maximum(self.learning_rate_minimum,
-        tf.train.exponential_decay(
-            self.learning_rate,
-            self.learning_rate_step,
-            self.learning_rate_decay_step,
-            self.learning_rate_decay,
-            staircase=True))
-    self.optim = tf.train.RMSPropOptimizer(
-        self.learning_rate_op, momentum=0.95, epsilon=0.01).minimize(self.loss)
 
     tf.initialize_all_variables().run()
 
