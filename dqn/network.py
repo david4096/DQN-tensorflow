@@ -1,31 +1,33 @@
 import tensorflow as tf
 
+from .ops import *
+
 class DQN(object):
-  def __init__(self, config, sess):
+  def __init__(self, config, output_size, sess):
     self.var = {}
 
     #initializer = tf.contrib.layers.xavier_initializer()
     initializer = tf.truncated_normal_initializer(0, 0.02)
     activation_fn = tf.nn.relu
 
-    if self.cnn_format == 'NHWC':
+    if config.data_format == 'NHWC':
       self.s_t = tf.placeholder('float32',
-          [None, self.screen_width, self.screen_height, self.history_length], name='s_t')
+          [None, config.screen_width, config.screen_height, config.history_length], name='s_t')
     else:
       self.s_t = tf.placeholder('float32',
-          [None, self.history_length, self.screen_width, self.screen_height], name='s_t')
+          [None, config.history_length, config.screen_width, config.screen_height], name='s_t')
 
     self.l1, self.var['l1_w'], self.var['l1_b'] = conv2d(self.s_t,
-        32, [8, 8], [4, 4], initializer, activation_fn, self.cnn_format, name='l1')
+        32, [8, 8], [4, 4], initializer, activation_fn, config.data_format, name='l1')
     self.l2, self.var['l2_w'], self.var['l2_b'] = conv2d(self.l1,
-        64, [4, 4], [2, 2], initializer, activation_fn, self.cnn_format, name='l2')
+        64, [4, 4], [2, 2], initializer, activation_fn, config.data_format, name='l2')
     self.l3, self.var['l3_w'], self.var['l3_b'] = conv2d(self.l2,
-        64, [3, 3], [1, 1], initializer, activation_fn, self.cnn_format, name='l3')
+        64, [3, 3], [1, 1], initializer, activation_fn, config.data_format, name='l3')
 
     shape = self.l3.get_shape().as_list()
     self.l3_flat = tf.reshape(self.l3, [-1, reduce(lambda x, y: x * y, shape[1:])])
 
-    if self.dueling:
+    if config.dueling:
       self.value_hid, self.var['l4_val_w'], self.var['l4_val_b'] = \
           linear(self.l3_flat, 512, activation_fn=activation_fn, name='value_hid')
 
@@ -36,7 +38,7 @@ class DQN(object):
         linear(self.value_hid, 1, name='value_out')
 
       self.advantage, self.var['adv_w_out'], self.var['adv_w_b'] = \
-        linear(self.adv_hid, self.env.action_size, name='adv_out')
+        linear(self.adv_hid, output_size, name='adv_out')
 
       # Average Dueling
       self.q = self.value + (self.advantage - 
