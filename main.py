@@ -47,7 +47,7 @@ def main(_):
     global_network = DQN(config, sess)
 
     config = get_config(FLAGS) or FLAGS
-    if FLAGS.use_gpu:
+    if not FLAGS.use_gpu:
       config.cnn_format = 'NHWC'
 
     loss = tf.reduce_mean(tf.square(clipped_delta), name='loss')
