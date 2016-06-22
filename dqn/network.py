@@ -45,7 +45,7 @@ class DQN(object):
         tf.reduce_mean(self.advantage, reduction_indices=1, keep_dims=True))
     else:
       self.l4, self.var['l4_w'], self.var['l4_b'] = linear(self.l3_flat, 512, activation_fn=activation_fn, name='l4')
-      self.q, self.var['q_w'], self.var['q_b'] = linear(self.l4, self.env.action_size, name='q')
+      self.q, self.var['q_w'], self.var['q_b'] = linear(self.l4, output_size, name='q')
 
     self.q_action = tf.argmax(self.q, dimension=1)
     self.q_idx = tf.placeholder('int32', [None, None], 'outputs_idx')

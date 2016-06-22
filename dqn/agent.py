@@ -5,11 +5,11 @@ import numpy as np
 from tqdm import tqdm
 import tensorflow as tf
 
+from .utils import get_time
 from .base import BaseModel
 from .history import History
 from .ops import linear, conv2d
 from .replay_memory import ReplayMemory
-from utils import get_time, save_pkl, load_pkl
 
 class Agent(object):
   def __init__(self, config, environment, global_network, global_optim, learning_rate_op, sess):
@@ -29,6 +29,15 @@ class Agent(object):
 
     self.build_dqn()
 
+    learning_rate_step = tf.placeholder('int64', None, name='learning_rate_step')
+    learning_rate_op = tf.maximum(config.learning_rate_minimum,
+        tf.train.exponential_decay(
+            config.learning_rate,
+            learning_rate_step,
+            learning_rate_decay_step,
+            learning_rate_decay,
+            staircase=True))
+
   def train(self, global_t):
     self.global_t = global_t
 
@@ -40,11 +49,11 @@ class Agent(object):
       if global_t[0] > self.t_train_max:
         break
 
-      # 1. Predict
+      # 1. predict
       action = self.predict(state)
-      # 2. Step
-      state, reward, terminal = self.env.step(-1, is_training=True)
-      # 3. Observe
+      # 2. act
+      state, reward, terminal = self.env.act(-1, is_training=True)
+      # 3. observe
       self.observe(state, reward, terminal)
 
       if terminal:
@@ -65,11 +74,11 @@ class Agent(object):
     for _ in range(self.history_length):
       self.history.add(screen)
 
-    for self.step in tqdm(range(start_step, self.max_step), ncols=70, initial=start_step):
+    for self.t in tqdm(range(start_step, self.t_train_max), ncols=70, initial=start_step):
       if global_t[0] > self.t_train_max:
         break
 
-      if self.step == self.learn_start:
+      if self.t == self.t_learn_start:
         num_game, self.update_count, ep_reward = 0, 0, 0.
         total_reward, self.total_loss, self.total_q = 0., 0., 0.
         ep_rewards, actions = [], []
@@ -93,8 +102,8 @@ class Agent(object):
       actions.append(action)
       total_reward += reward
 
-      if self.step >= self.learn_start:
-        if self.step % self.test_step == self.test_step - 1:
+      if self.t >= self.t_learn_start:
+        if self.t % self.test_step == self.test_step - 1:
           avg_reward = total_reward / self.test_step
           avg_loss = self.total_loss / self.update_count
           avg_q = self.total_q / self.update_count
@@ -110,12 +119,12 @@ class Agent(object):
               % (avg_reward, avg_loss, avg_q, avg_ep_reward, max_ep_reward, min_ep_reward, num_game)
 
           if max_avg_ep_reward * 0.9 <= avg_ep_reward:
-            self.step_assign_op.eval({self.step_input: self.step + 1})
-            self.save_model(self.step + 1)
+            self.t_assign_op.eval({self.t_input: self.t + 1})
+            self.save_model(self.t + 1)
 
             max_avg_ep_reward = max(max_avg_ep_reward, avg_ep_reward)
 
-          if self.step > 180:
+          if self.t > 180:
             self.inject_summary({
                 'average.reward': avg_reward,
                 'average.loss': avg_loss,
@@ -126,8 +135,8 @@ class Agent(object):
                 'episode.num of game': num_game,
                 'episode.rewards': ep_rewards,
                 'episode.actions': actions,
-                'training.learning_rate': self.learning_rate_op.eval({self.learning_rate_step: self.step}),
-              }, self.step)
+                'training.learning_rate': self.learning_rate_op.eval({self.learning_rate_step: self.t}),
+              }, self.t)
 
           num_game = 0
           total_reward = 0.
@@ -141,7 +150,7 @@ class Agent(object):
   def predict(self, s_t, test_ep=None):
     ep = test_ep or (self.ep_end +
         max(0., (self.ep_start - self.ep_end)
-          * (self.ep_end_t - max(0., self.step - self.learn_start)) / self.ep_end_t))
+          * (self.t_ep_end - max(0., self.t - self.t_learn_start)) / self.t_ep_end))
 
     if random.random() < ep:
       action = random.randrange(self.env.action_size)
@@ -156,11 +165,11 @@ class Agent(object):
     self.history.add(screen)
     self.memory.add(screen, reward, action, terminal)
 
-    if self.step > self.learn_start:
-      if self.step % self.train_frequency == 0:
+    if self.t > self.t_learn_start:
+      if self.t % self.t_train_freq == 0:
         self.update()
 
-      if self.step % self.target_q_update_step == self.target_q_update_step - 1:
+      if self.t % self.t_target_q_update_freq == self.t_target_q_update_freq - 1:
         self.update_target_q_network()
 
   def update(self):
@@ -193,7 +202,7 @@ class Agent(object):
         self.target_q_t: target_q_t,
         self.action: action,
         self.s_t: s_t,
-        self.learning_rate_step: self.step,
+        self.learning_rate_step: self.t,
       })
 
     if self.worker_id == 0:
@@ -248,7 +257,7 @@ class Agent(object):
       self.summary_placeholders[tag]: value for tag, value in tag_dict.items()
     })
     for summary_str in summary_str_lists:
-      self.writer.add_summary(summary_str, self.step)
+      self.writer.add_summary(summary_str, self.t)
 
   def play(self, n_step=10000, n_episode=100, test_ep=None, render=False):
     if test_ep == None:
